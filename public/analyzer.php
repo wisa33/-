@@ -22,6 +22,13 @@ function pick_reason_option(array $options): ?array
             return $opt;
         }
     }
+
+  foreach ($options as $opt) {
+    if (trim((string)($opt['reason'] ?? '')) !== '') {
+      return $opt;
+    }
+  }
+
     return $options[0] ?? null;
 }
 
@@ -43,6 +50,7 @@ $steps = list_steps($submissionId);
 $optionsByStep = list_options_for_submission($submissionId);
 $defaultStepDefId = (int)($stepDefs[0]['step_def_id'] ?? 0);
 $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
+$youtubeVideoId = extract_youtube_video_id((string)($play['video_id'] ?? ''));
 ?>
 <!doctype html>
 <html lang="ja">
@@ -70,16 +78,31 @@ $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
   </header>
 
   <main class="main canvas-main">
-    <div class="canvas-toolbar tiny">Space+ドラッグでパン / Ctrl+ホイールでズーム / 事実をクリックで±操作表示 / 事実ドラッグで順番入替</div>
+    <div class="canvas-toolbar tiny row between">
+      <span>Space+ドラッグでパン / Ctrl+ホイールでズーム / 事実をクリックで±操作表示</span>
+      <span class="row">
+        <button id="input-mode-toggle" type="button" class="btn">入力モード</button>
+        <span id="yt-state" class="tiny mono">動画: 未接続</span>
+        <button id="yt-rw" type="button" class="btn">⏪ 5s</button>
+        <button id="yt-play" type="button" class="btn">再生</button>
+        <button id="yt-pause" type="button" class="btn">停止</button>
+        <button id="yt-ff" type="button" class="btn">5s ⏩</button>
+        <button id="yt-slow" type="button" class="btn">0.5x ▶</button>
+        <button id="yt-slow-back" type="button" class="btn">0.5x ◀</button>
+      </span>
+    </div>
     <div id="canvas-viewport" class="canvas-viewport">
+      <div id="video-bg" class="video-bg" aria-hidden="true">
+        <div id="yt-player"></div>
+      </div>
+
+      <div class="lane-heads" aria-hidden="true">
+        <div class="lane-head fact">事実</div>
+        <div class="lane-head if">もしも</div>
+      </div>
+
       <div id="world" class="world">
         <svg id="arrow-overlay"></svg>
-
-        <div class="lane-heads" aria-hidden="true">
-          <div class="lane-head if">もしも</div>
-          <div class="lane-head fact">事実</div>
-          <div class="lane-head reason">判断理由</div>
-        </div>
 
         <div id="turn-stack">
           <?php foreach ($steps as $idx => $step): ?>
@@ -102,15 +125,20 @@ $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
                     id="if-<?= $altChoiceId ?>"
                     data-prev-step="<?= $prevStepInstId ?>"
                     data-if-step="<?= $stepInstId ?>"
+                    data-choice-def-id="<?= (int)$opt['choice_def_id'] ?>"
                   >
+                    <button class="delete-icon" aria-label="もしもを削除" title="削除" data-action="delete-option" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $altChoiceId ?>" <?= $locked ? 'disabled' : '' ?>>✕</button>
                     <div class="card-summary row between">
                       <strong><?= h($opt['choice_label']) ?></strong>
                       <span class="tiny"><?= $selected ? '採用中' : '候補' ?></span>
                     </div>
                     <div class="card-detail">
                       <div class="row">
-                        <button class="btn" data-action="select-option" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $altChoiceId ?>" <?= $locked ? 'disabled' : '' ?>>採用</button>
-                        <button class="btn" data-action="delete-option" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $altChoiceId ?>" <?= $locked ? 'disabled' : '' ?>>削除</button>
+                        <?php if ($selected): ?>
+                          <button class="btn" data-action="unselect-option" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $altChoiceId ?>" <?= $locked ? 'disabled' : '' ?>>採用解除</button>
+                        <?php else: ?>
+                          <button class="btn" data-action="select-option" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $altChoiceId ?>" <?= $locked ? 'disabled' : '' ?>>採用</button>
+                        <?php endif; ?>
                       </div>
                     </div>
                   </article>
@@ -118,7 +146,8 @@ $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
               </section>
 
               <section class="lane-cell lane-fact" data-lane="fact">
-                <article class="card fact interactive-card fact-node" id="step-<?= $stepInstId ?>" draggable="true" data-step-inst-id="<?= $stepInstId ?>" data-step-def-id="<?= (int)$step['step_def_id'] ?>">
+                <article class="card fact interactive-card fact-node" id="step-<?= $stepInstId ?>" data-step-inst-id="<?= $stepInstId ?>" data-step-def-id="<?= (int)$step['step_def_id'] ?>">
+                  <button class="delete-icon" aria-label="事実を削除" title="削除" data-action="delete-step" data-submission-id="<?= $submissionId ?>" data-step-inst-id="<?= $stepInstId ?>" <?= $locked ? 'disabled' : '' ?>>✕</button>
                   <button class="hotspot hot-up" data-hot-add="up" data-step-inst-id="<?= $stepInstId ?>" <?= $locked ? 'disabled' : '' ?>>＋</button>
                   <button class="hotspot hot-down" data-hot-add="down" data-step-inst-id="<?= $stepInstId ?>" <?= $locked ? 'disabled' : '' ?>>＋</button>
                   <button class="hotspot hot-left" data-hot-add="left" data-step-inst-id="<?= $stepInstId ?>" <?= $locked ? 'disabled' : '' ?>>＋</button>
@@ -126,13 +155,8 @@ $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
 
                   <div class="card-summary row between">
                     <div class="row"><span class="idbubble"><?= $turn ?></span><strong><?= h($step['step_label']) ?></strong></div>
-                    <span class="tiny relation-arrow">事実<?= $turn ?></span>
                   </div>
                   <div class="card-detail">
-                    <div class="row between">
-                      <span class="tiny mono">step_inst_id: <?= $stepInstId ?></span>
-                      <button class="btn" data-action="delete-step" data-submission-id="<?= $submissionId ?>" data-step-inst-id="<?= $stepInstId ?>" <?= $locked ? 'disabled' : '' ?>>削除</button>
-                    </div>
                     <div class="grid2">
                       <label class="tiny">step定義
                         <select class="select" data-autosave="1" data-type="step" data-id="<?= $stepInstId ?>" data-field="step_def_id" data-submission-id="<?= $submissionId ?>" <?= $locked ? 'disabled' : '' ?>>
@@ -154,28 +178,44 @@ $defaultChoiceDefId = (int)($choiceDefs[0]['choice_def_id'] ?? 0);
                   </div>
                 </article>
               </section>
+            </div>
 
-              <section class="lane-cell lane-reason" data-lane="reason">
-                <article class="card reason-card interactive-card" id="reason-<?= $stepInstId ?>" data-reason-target-step="<?= $nextStepInstId ?>">
-                  <div class="card-summary row between">
-                    <strong>判断理由 <?= $turn ?>-<?= $turn + 1 ?></strong>
-                    <span class="tiny relation-arrow">理由<?= $turn ?> → 事実<?= $turn + 1 ?></span>
-                  </div>
-                  <div class="card-detail">
-                    <?php if ($reasonOption): ?>
-                      <?php $reasonAltId = (int)$reasonOption['alt_choice_id']; ?>
-                      <div class="tiny">基準: <?= h($reasonOption['choice_label']) ?></div>
+            <?php if ($nextStepInstId > 0): ?>
+              <div class="reason-bridge-row" data-turn-reason="<?= $turn ?>">
+                <?php if ($reasonOption): ?>
+                  <?php
+                    $reasonAltId = (int)$reasonOption['alt_choice_id'];
+                    $reasonText = trim((string)$reasonOption['reason']);
+                    $reasonEmpty = $reasonText === '';
+                  ?>
+                  <article class="card reason-card interactive-card <?= $reasonEmpty ? 'reason-empty' : '' ?>" id="reason-<?= $stepInstId ?>" data-reason-target-step="<?= $nextStepInstId ?>">
+                    <?php if (!$reasonEmpty): ?>
+                      <button class="delete-icon" aria-label="判断理由を削除" title="削除" data-action="delete-reason" data-submission-id="<?= $submissionId ?>" data-alt-choice-id="<?= $reasonAltId ?>" <?= $locked ? 'disabled' : '' ?>>✕</button>
+                    <?php endif; ?>
+                    <div class="card-summary row between">
+                      <span class="tiny reason-preview"><?= $reasonEmpty ? '理由未入力' : h((string)$reasonOption['reason']) ?></span>
+                    </div>
+                    <div class="card-detail">
                       <label class="tiny">理由
                         <textarea class="textarea" data-autosave="1" data-type="opt" data-id="<?= $reasonAltId ?>" data-field="reason" data-submission-id="<?= $submissionId ?>" <?= $locked ? 'disabled' : '' ?>><?= h((string)$reasonOption['reason']) ?></textarea>
                       </label>
-                    <?php else: ?>
-                      <div class="tiny red">このターンの判断理由元がありません</div>
-                    <?php endif; ?>
-                  </div>
-                </article>
-              </section>
-            </div>
+                    </div>
+                  </article>
+                <?php else: ?>
+                  <article class="card reason-card reason-empty" id="reason-<?= $stepInstId ?>" data-reason-target-step="<?= $nextStepInstId ?>">
+                    <div class="tiny red">このターンの判断理由元がありません</div>
+                  </article>
+                <?php endif; ?>
+              </div>
+            <?php endif; ?>
           <?php endforeach; ?>
+
+          <div class="turn-row turn-row-add" data-turn="add">
+            <section class="lane-cell lane-if"></section>
+            <section class="lane-cell lane-fact lane-fact-add">
+              <button class="btn primary" data-action="add-step" data-submission-id="<?= $submissionId ?>" <?= $locked ? 'disabled' : '' ?>>＋ 事実ブロックを追加</button>
+            </section>
+          </div>
         </div>
       </div>
     </div>
@@ -200,7 +240,9 @@ window.__APP__ = {
   submissionId: <?= $submissionId ?>,
   locked: <?= $locked ? 'true' : 'false' ?>,
   defaultStepDefId: <?= $defaultStepDefId ?>,
-  defaultChoiceDefId: <?= $defaultChoiceDefId ?>
+  defaultChoiceDefId: <?= $defaultChoiceDefId ?>,
+  choiceDefIds: <?= json_encode(array_values(array_map(static fn($def) => (int)$def['choice_def_id'], $choiceDefs)), JSON_UNESCAPED_UNICODE) ?>,
+  youtubeVideoId: <?= json_encode($youtubeVideoId, JSON_UNESCAPED_UNICODE) ?>
 };
 </script>
 <script src="assets/app.js"></script>

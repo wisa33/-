@@ -38,6 +38,9 @@ function load_env(string $path): void
 
 function db_driver(): string
 {
+    $root = dirname(__DIR__);
+    load_env($root . '/.env');
+
     $dsn = getenv('DB_DSN') ?: '';
     if ($dsn !== '') {
         return str_starts_with($dsn, 'sqlite:') ? 'sqlite' : 'other';

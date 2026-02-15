@@ -33,3 +33,45 @@ function require_str(string $key, array $src, int $maxLen = 1000): string
     }
     return $val;
 }
+
+function extract_youtube_video_id(?string $input): ?string
+{
+    $raw = trim((string)$input);
+    if ($raw === '') {
+        return null;
+    }
+
+    if (preg_match('/^[A-Za-z0-9_-]{11}$/', $raw) === 1) {
+        return $raw;
+    }
+
+    $parts = @parse_url($raw);
+    if (!is_array($parts)) {
+        return null;
+    }
+
+    $host = strtolower((string)($parts['host'] ?? ''));
+    $path = (string)($parts['path'] ?? '');
+
+    if ($host === 'youtu.be') {
+        $id = ltrim($path, '/');
+        return preg_match('/^[A-Za-z0-9_-]{11}$/', $id) === 1 ? $id : null;
+    }
+
+    if (str_contains($host, 'youtube.com')) {
+        parse_str((string)($parts['query'] ?? ''), $query);
+        $v = (string)($query['v'] ?? '');
+        if (preg_match('/^[A-Za-z0-9_-]{11}$/', $v) === 1) {
+            return $v;
+        }
+
+        if (preg_match('#/embed/([A-Za-z0-9_-]{11})#', $path, $m) === 1) {
+            return $m[1];
+        }
+        if (preg_match('#/shorts/([A-Za-z0-9_-]{11})#', $path, $m) === 1) {
+            return $m[1];
+        }
+    }
+
+    return null;
+}

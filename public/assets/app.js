@@ -3,6 +3,17 @@
   const viewport = document.getElementById('canvas-viewport');
   const world = document.getElementById('world');
   const overlay = document.getElementById('arrow-overlay');
+  const turnStack = document.getElementById('turn-stack');
+  const laneHeads = document.querySelector('.lane-heads');
+  const videoBg = document.getElementById('video-bg');
+  const ytPlayBtn = document.getElementById('yt-play');
+  const ytPauseBtn = document.getElementById('yt-pause');
+  const ytRwBtn = document.getElementById('yt-rw');
+  const ytFfBtn = document.getElementById('yt-ff');
+  const ytSlowBtn = document.getElementById('yt-slow');
+  const ytSlowBackBtn = document.getElementById('yt-slow-back');
+  const ytStateEl = document.getElementById('yt-state');
+  const inputModeBtn = document.getElementById('input-mode-toggle');
 
   const toast = (msg) => {
     if (!toastEl) return;
@@ -31,7 +42,110 @@
     panning: false,
     panStartX: 0,
     panStartY: 0,
-    dragStepId: null
+    dragStepId: null,
+    ytPlayer: null,
+    ytReady: false,
+    ytPlaying: false,
+    lastCenteredStepId: null
+    ,slowBackTimer: null
+  };
+
+  const viewStateKey = `analyzer:view:${Number(window.__APP__?.submissionId || 0)}`;
+  const videoStateKey = `analyzer:video:${Number(window.__APP__?.submissionId || 0)}`;
+  const inputModeKey = `analyzer:input-mode:${Number(window.__APP__?.submissionId || 0)}`;
+
+  const syncInputModeUi = () => {
+    if (!inputModeBtn) return;
+    const on = document.body.classList.contains('input-mode');
+    inputModeBtn.textContent = on ? '入力モード解除' : '入力モード';
+  };
+
+  const setInputMode = (on) => {
+    document.body.classList.toggle('input-mode', on);
+    try {
+      sessionStorage.setItem(inputModeKey, on ? '1' : '0');
+    } catch (_) {
+      // noop
+    }
+    syncInputModeUi();
+  };
+
+  const initInputMode = () => {
+    let on = false;
+    try {
+      on = sessionStorage.getItem(inputModeKey) === '1';
+    } catch (_) {
+      on = false;
+    }
+    setInputMode(on);
+    inputModeBtn?.addEventListener('click', () => {
+      setInputMode(!document.body.classList.contains('input-mode'));
+    });
+  };
+
+  const loadViewState = () => {
+    try {
+      const raw = sessionStorage.getItem(viewStateKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const scale = Number(parsed?.scale);
+      const tx = Number(parsed?.tx);
+      const ty = Number(parsed?.ty);
+      if (Number.isFinite(scale) && scale >= 0.35 && scale <= 2.2) state.scale = scale;
+      if (Number.isFinite(tx)) state.tx = tx;
+      if (Number.isFinite(ty)) state.ty = ty;
+    } catch (_) {
+      // noop
+    }
+  };
+
+  const saveViewState = () => {
+    try {
+      sessionStorage.setItem(viewStateKey, JSON.stringify({
+        scale: state.scale,
+        tx: state.tx,
+        ty: state.ty
+      }));
+    } catch (_) {
+      // noop
+    }
+  };
+
+  const saveVideoState = () => {
+    if (!state.ytPlayer || !state.ytReady) return;
+    try {
+      const YT = window.YT;
+      const playerState = Number(state.ytPlayer.getPlayerState?.() ?? -1);
+      const currentTime = Number(state.ytPlayer.getCurrentTime?.() ?? 0);
+      const playbackRate = Number(state.ytPlayer.getPlaybackRate?.() ?? 1);
+      sessionStorage.setItem(videoStateKey, JSON.stringify({
+        t: currentTime,
+        rate: playbackRate,
+        shouldPlay: Boolean(YT && playerState === YT.PlayerState.PLAYING)
+      }));
+    } catch (_) {
+      // noop
+    }
+  };
+
+  const consumeVideoState = () => {
+    try {
+      const raw = sessionStorage.getItem(videoStateKey);
+      if (!raw) return null;
+      sessionStorage.removeItem(videoStateKey);
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const updateExpandedRows = () => {
+    if (!turnStack) return;
+    turnStack.querySelectorAll('.turn-row.row-expanded, .reason-bridge-row.row-expanded').forEach((row) => row.classList.remove('row-expanded'));
+    turnStack.querySelectorAll('.turn-row, .reason-bridge-row').forEach((row) => {
+      const active = row.querySelector('.fact-node.selected, .interactive-card:focus-within, .reason-empty.editing');
+      if (active) row.classList.add('row-expanded');
+    });
   };
 
 
@@ -49,32 +163,263 @@
     };
 
     const ifCount = measureLane('.lane-if .if-node');
-    const reasonCount = measureLane('.lane-reason .reason-card');
+    const factCount = measureLane('.lane-fact .fact-node');
 
     const cardWidth = 210;
-    const laneInnerGap = 16;
-    const laneGap = 210;
+    const cardHeight = 140;
+    const laneInnerGap = 12;
+    const laneGap = 90;
     const factWidth = 420;
+    const bridgeWidth = 240;
 
     const laneWidthByCount = (count) => (count * cardWidth) + (Math.max(0, count - 1) * laneInnerGap);
+    const laneHeadHeightByCount = (count) => (count * cardHeight) + (Math.max(0, count - 1) * 12);
     const ifWidth = Math.max(factWidth, laneWidthByCount(ifCount));
-    const reasonWidth = Math.max(factWidth, laneWidthByCount(reasonCount));
-    const sideWidth = Math.max(ifWidth, reasonWidth);
+    const turnColWidth = Math.max(factWidth, ifWidth);
+    const ifHeadHeight = Math.max(120, laneHeadHeightByCount(ifCount));
+    const factHeadHeight = Math.max(120, laneHeadHeightByCount(factCount));
 
-    document.querySelectorAll('.turn-row, .lane-heads').forEach((el) => {
-      el.style.setProperty('--side-lane-width', `${sideWidth}px`);
-      el.style.setProperty('--fact-lane-width', `${factWidth}px`);
+    document.querySelectorAll('.turn-row, .lane-heads, .reason-bridge-row').forEach((el) => {
+      el.style.setProperty('--turn-col-width', `${turnColWidth}px`);
+      el.style.setProperty('--bridge-col-width', `${bridgeWidth}px`);
       el.style.setProperty('--lane-gap', `${laneGap}px`);
-      el.style.setProperty('--if-head-width', `${ifWidth}px`);
-      el.style.setProperty('--fact-head-width', `${factWidth}px`);
-      el.style.setProperty('--reason-head-width', `${reasonWidth}px`);
+      el.style.setProperty('--if-head-height', `${ifHeadHeight}px`);
+      el.style.setProperty('--fact-head-height', `${factHeadHeight}px`);
     });
+
+    updateWorldBounds();
+  };
+
+  const updateWorldBounds = () => {
+    if (!world || !turnStack) return;
+    const padX = 600;
+    const padY = 500;
+    const contentWidth = turnStack.offsetLeft + turnStack.scrollWidth + padX;
+    const contentHeight = turnStack.offsetTop + turnStack.scrollHeight + padY;
+    world.style.width = `${Math.max(2600, contentWidth)}px`;
+    world.style.minHeight = `${Math.max(1800, contentHeight)}px`;
+  };
+
+  const syncLaneHeadPositions = () => {
+    if (!viewport || !laneHeads) return;
+    const firstTurn = document.querySelector('.turn-row[data-turn]');
+    if (!firstTurn) return;
+
+    const factLane = firstTurn.querySelector('.lane-fact');
+    const ifLane = firstTurn.querySelector('.lane-if');
+    const factHead = laneHeads.querySelector('.lane-head.fact');
+    const ifHead = laneHeads.querySelector('.lane-head.if');
+    if (!factLane || !ifLane || !factHead || !ifHead) return;
+
+    const vp = viewport.getBoundingClientRect();
+    const factRect = factLane.getBoundingClientRect();
+    const ifRect = ifLane.getBoundingClientRect();
+
+    laneHeads.style.left = `12px`;
+
+    const clampTop = (desiredTop, h) => {
+      const min = 8;
+      const max = Math.max(min, vp.height - h - 8);
+      return Math.max(min, Math.min(max, desiredTop));
+    };
+
+    const fitHeight = (laneHeight) => Math.max(120, Math.min(vp.height - 16, laneHeight));
+    const factHeadHeight = fitHeight(factRect.height);
+    const ifHeadHeight = fitHeight(ifRect.height);
+
+    factHead.style.height = `${factHeadHeight}px`;
+    ifHead.style.height = `${ifHeadHeight}px`;
+
+    const factTop = clampTop((factRect.top - vp.top) + ((factRect.height - factHeadHeight) / 2), factHeadHeight);
+    const ifTop = clampTop((ifRect.top - vp.top) + ((ifRect.height - ifHeadHeight) / 2), ifHeadHeight);
+    const gap = Math.max(8, ifTop - factTop - factHeadHeight);
+
+    laneHeads.style.top = `0px`;
+    laneHeads.style.gap = `${gap}px`;
+    factHead.style.marginTop = `${factTop}px`;
+    ifHead.style.marginTop = `0px`;
   };
 
   const applyTransform = () => {
     if (!world) return;
     world.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
+    saveViewState();
+    syncLaneHeadPositions();
     recalcArrows();
+  };
+
+  const centerFactNode = (factNode) => {
+    if (!viewport || !factNode) return;
+    const vp = viewport.getBoundingClientRect();
+    const fr = factNode.getBoundingClientRect();
+    const dx = (vp.left + vp.width / 2) - (fr.left + fr.width / 2);
+    const dy = (vp.top + vp.height / 2) - (fr.top + fr.height / 2);
+    state.tx += dx;
+    state.ty += dy;
+    applyTransform();
+  };
+
+  const initYouTubeBackground = () => {
+    const videoId = (window.__APP__.youtubeVideoId || '').trim();
+    const setVideoUi = (enabled, text) => {
+      if (ytPlayBtn) ytPlayBtn.disabled = !enabled;
+      if (ytPauseBtn) ytPauseBtn.disabled = !enabled;
+      if (ytRwBtn) ytRwBtn.disabled = !enabled;
+      if (ytFfBtn) ytFfBtn.disabled = !enabled;
+      if (ytSlowBtn) ytSlowBtn.disabled = !enabled;
+      if (ytSlowBackBtn) ytSlowBackBtn.disabled = !enabled;
+      if (ytStateEl) ytStateEl.textContent = text;
+    };
+
+    const stopSlowBack = () => {
+      if (state.slowBackTimer) {
+        clearInterval(state.slowBackTimer);
+        state.slowBackTimer = null;
+      }
+      if (ytSlowBackBtn) ytSlowBackBtn.textContent = '0.5x ◀';
+    };
+
+    if (!videoBg || videoId === '') {
+      if (videoBg) videoBg.style.display = 'none';
+      setVideoUi(false, '動画: YouTube URL未設定');
+      return;
+    }
+
+    setVideoUi(false, '動画: 接続中...');
+
+    const startMonitor = () => {
+      window.setInterval(() => {
+        if (!state.ytPlayer || !state.ytReady || !state.ytPlaying) return;
+        const current = Number(state.ytPlayer.getCurrentTime?.() || 0);
+        let candidate = null;
+        document.querySelectorAll('.fact-node').forEach((fact) => {
+          const tsInput = fact.querySelector('input[data-field="timestamp_sec"]');
+          if (!tsInput) return;
+          const ts = Number(tsInput.value);
+          if (!Number.isFinite(ts) || ts <= 0) return;
+          if (ts <= current && (!candidate || ts > candidate.ts)) {
+            candidate = { ts, stepId: Number(fact.dataset.stepInstId || 0), node: fact };
+          }
+        });
+        if (!candidate) return;
+        if (state.lastCenteredStepId === candidate.stepId) return;
+        state.lastCenteredStepId = candidate.stepId;
+        centerFactNode(candidate.node);
+      }, 250);
+    };
+
+    const boot = () => {
+      const YT = window.YT;
+      if (!YT || !YT.Player) return;
+      state.ytPlayer = new YT.Player('yt-player', {
+        videoId,
+        playerVars: {
+          playsinline: 1,
+          rel: 0,
+          modestbranding: 1,
+          controls: 1,
+          mute: 1
+        },
+        events: {
+          onReady: () => {
+            state.ytReady = true;
+            setVideoUi(true, '動画: 停止中');
+
+            const restored = consumeVideoState();
+            if (restored) {
+              const t = Number(restored.t ?? 0);
+              const rate = Number(restored.rate ?? 1);
+              const shouldPlay = Boolean(restored.shouldPlay);
+              if (Number.isFinite(t) && t > 0) {
+                state.ytPlayer.seekTo?.(t, true);
+              }
+              if (Number.isFinite(rate) && rate > 0) {
+                state.ytPlayer.setPlaybackRate?.(rate);
+              }
+              if (shouldPlay) {
+                state.ytPlayer.playVideo?.();
+              }
+            }
+          },
+          onStateChange: (e) => {
+            state.ytPlaying = e.data === YT.PlayerState.PLAYING;
+            if (e.data === YT.PlayerState.PLAYING) stopSlowBack();
+            if (e.data === YT.PlayerState.PLAYING) setVideoUi(true, '動画: 再生中');
+            if (e.data === YT.PlayerState.PAUSED) setVideoUi(true, '動画: 停止中');
+            if (e.data === YT.PlayerState.ENDED) setVideoUi(true, '動画: 終了');
+          }
+        }
+      });
+      startMonitor();
+    };
+
+    if (window.YT && window.YT.Player) {
+      boot();
+      return;
+    }
+
+    window.onYouTubeIframeAPIReady = boot;
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(script);
+
+    ytPlayBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      stopSlowBack();
+      state.ytPlayer.setPlaybackRate?.(1);
+      state.ytPlayer.playVideo?.();
+    });
+
+    ytPauseBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      stopSlowBack();
+      state.ytPlayer.pauseVideo?.();
+    });
+
+    ytRwBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      stopSlowBack();
+      const cur = Number(state.ytPlayer.getCurrentTime?.() || 0);
+      state.ytPlayer.seekTo?.(Math.max(0, cur - 5), true);
+    });
+
+    ytFfBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      stopSlowBack();
+      const cur = Number(state.ytPlayer.getCurrentTime?.() || 0);
+      const dur = Number(state.ytPlayer.getDuration?.() || 0);
+      const next = dur > 0 ? Math.min(dur, cur + 5) : (cur + 5);
+      state.ytPlayer.seekTo?.(next, true);
+    });
+
+    ytSlowBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      stopSlowBack();
+      state.ytPlayer.setPlaybackRate?.(0.5);
+      state.ytPlayer.playVideo?.();
+      setVideoUi(true, '動画: スロー再生(0.5x)');
+    });
+
+    ytSlowBackBtn?.addEventListener('click', () => {
+      if (!state.ytPlayer || !state.ytReady) return;
+      if (state.slowBackTimer) {
+        stopSlowBack();
+        setVideoUi(true, '動画: 停止中');
+        return;
+      }
+      state.ytPlayer.pauseVideo?.();
+      ytSlowBackBtn.textContent = '◼ 戻し停止';
+      setVideoUi(true, '動画: スロー戻し(疑似)');
+      state.slowBackTimer = window.setInterval(() => {
+        const cur = Number(state.ytPlayer.getCurrentTime?.() || 0);
+        const next = Math.max(0, cur - 0.25);
+        state.ytPlayer.seekTo?.(next, true);
+        if (next <= 0.01) {
+          stopSlowBack();
+          setVideoUi(true, '動画: 先頭');
+        }
+      }, 250);
+    });
   };
 
   const setSelectedFact = (id) => {
@@ -83,6 +428,7 @@
       const sid = Number(el.dataset.stepInstId || 0);
       el.classList.toggle('selected', sid === id);
     });
+    updateExpandedRows();
   };
 
   const toggleSelectedFact = (id) => {
@@ -136,6 +482,27 @@
 
   const hookAutoSave = () => {
     const debounceMap = new Map();
+
+    const applyLocalPreview = (el) => {
+      if (!el.matches('select[data-type="step"][data-field="step_def_id"]')) return;
+      const factNode = el.closest('.fact-node');
+      if (!factNode) return;
+      const label = el.options?.[el.selectedIndex]?.text?.trim();
+      if (!label) return;
+      const title = factNode.querySelector('.card-summary strong');
+      if (title) title.textContent = label;
+    };
+
+    const applyReasonPreview = (el) => {
+      if (!el.matches('textarea[data-type="opt"][data-field="reason"]')) return;
+      const reasonCard = el.closest('.reason-card');
+      if (!reasonCard) return;
+      const preview = reasonCard.querySelector('.reason-preview');
+      if (!preview) return;
+      const text = (el.value || '').trim();
+      preview.textContent = text === '' ? '理由未入力' : text;
+    };
+
     const mark = (el, cls) => {
       el.classList.remove('mark-saving', 'mark-ok', 'mark-err');
       if (cls) el.classList.add(cls);
@@ -163,6 +530,8 @@
         }
       };
       const handler = () => {
+        applyLocalPreview(el);
+        applyReasonPreview(el);
         clearTimeout(debounceMap.get(el));
         debounceMap.set(el, setTimeout(save, 350));
       };
@@ -171,7 +540,21 @@
     });
   };
 
-  const refresh = () => { location.href = new URL(location.href).toString(); };
+  const refresh = () => {
+    saveVideoState();
+    location.href = new URL(location.href).toString();
+  };
+
+  const pickChoiceDefIdForStep = (stepInstId) => {
+    const all = Array.isArray(window.__APP__.choiceDefIds) ? window.__APP__.choiceDefIds.map(Number).filter(Boolean) : [];
+    const used = new Set(
+      Array.from(document.querySelectorAll(`.if-node[data-if-step="${stepInstId}"]`))
+        .map((node) => Number(node.dataset.choiceDefId || 0))
+        .filter(Boolean)
+    );
+    const found = all.find((id) => !used.has(id));
+    return Number(found || window.__APP__.defaultChoiceDefId || 0);
+  };
 
   const hookButtons = () => {
     document.querySelectorAll('[data-action]').forEach((btn) => {
@@ -192,7 +575,7 @@
           }
           if (action === 'add-option') {
             const stepInstId = Number(btn.dataset.stepInstId);
-            const choiceDefId = Number(document.getElementById(`add-choice-def-${stepInstId}`)?.value || window.__APP__.defaultChoiceDefId || 0);
+            const choiceDefId = Number(document.getElementById(`add-choice-def-${stepInstId}`)?.value || pickChoiceDefIdForStep(stepInstId));
             await api('add_option', { submission_id: submissionId, step_inst_id: stepInstId, choice_def_id: choiceDefId });
             return refresh();
           }
@@ -200,9 +583,26 @@
             await api('select_option', { submission_id: submissionId, alt_choice_id: Number(btn.dataset.altChoiceId) });
             return refresh();
           }
+          if (action === 'unselect-option') {
+            await api('unselect_option', { submission_id: submissionId, alt_choice_id: Number(btn.dataset.altChoiceId) });
+            return refresh();
+          }
           if (action === 'delete-option') {
             if (!confirm('この Option を削除しますか？')) return;
             await api('delete_option', { submission_id: submissionId, alt_choice_id: Number(btn.dataset.altChoiceId) });
+            return refresh();
+          }
+          if (action === 'start-reason') {
+            const card = btn.closest('.reason-card');
+            card?.classList.add('editing');
+            const textarea = card?.querySelector('textarea[data-field="reason"]');
+            textarea?.focus();
+            updateExpandedRows();
+            return;
+          }
+          if (action === 'delete-reason') {
+            if (!confirm('この判断理由を削除しますか？')) return;
+            await api('update_option', { submission_id: submissionId, alt_choice_id: Number(btn.dataset.altChoiceId), fields: { reason: null } });
             return refresh();
           }
         } catch (err) {
@@ -212,33 +612,24 @@
     });
   };
 
-  const reorderFromDom = async () => {
-    const ids = Array.from(document.querySelectorAll('.fact-node')).map((n) => Number(n.dataset.stepInstId)).filter(Boolean);
-    await api('reorder_steps', { submission_id: Number(window.__APP__.submissionId), ordered_step_inst_ids: ids });
-  };
-
   const hookFactInteractions = () => {
     document.querySelectorAll('.fact-node').forEach((fact) => {
       fact.addEventListener('click', (e) => {
         if (e.target.closest('button,input,textarea,select,label')) return;
         toggleSelectedFact(Number(fact.dataset.stepInstId));
-      });
 
-      fact.addEventListener('dragstart', (e) => {
-        state.dragStepId = Number(fact.dataset.stepInstId);
-        e.dataTransfer.effectAllowed = 'move';
-      });
-      fact.addEventListener('dragover', (e) => e.preventDefault());
-      fact.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        const dragged = document.querySelector(`.fact-node[data-step-inst-id="${state.dragStepId}"]`);
-        if (!dragged || dragged === fact) return;
-        const parent = fact.parentElement;
-        parent.insertBefore(dragged, fact);
-        try {
-          await reorderFromDom();
-          refresh();
-        } catch (err) { toast(err.message); }
+        if (!state.ytPlayer || !state.ytReady) return;
+        const YT = window.YT;
+        if (!YT) return;
+        const currentState = Number(state.ytPlayer.getPlayerState?.() ?? -999);
+        if (currentState !== YT.PlayerState.PAUSED) return;
+
+        const now = Number(state.ytPlayer.getCurrentTime?.() || 0);
+        const tsInput = fact.querySelector('input[data-field="timestamp_sec"]');
+        if (!tsInput) return;
+        tsInput.value = now.toFixed(1);
+        tsInput.dispatchEvent(new Event('input', { bubbles: true }));
+        tsInput.dispatchEvent(new Event('change', { bubbles: true }));
       });
     });
 
@@ -254,13 +645,13 @@
 
         try {
           if (dir === 'left') {
-            const choiceDefId = Number(window.__APP__.defaultChoiceDefId || 0);
+            const choiceDefId = pickChoiceDefIdForStep(stepInstId);
             await api('add_option', { submission_id: submissionId, step_inst_id: stepInstId, choice_def_id: choiceDefId });
             return refresh();
           }
 
           if (dir === 'right') {
-            const choiceDefId = Number(window.__APP__.defaultChoiceDefId || 0);
+            const choiceDefId = pickChoiceDefIdForStep(stepInstId);
             const added = await api('add_option', { submission_id: submissionId, step_inst_id: stepInstId, choice_def_id: choiceDefId });
             await api('select_option', { submission_id: submissionId, alt_choice_id: Number(added.alt_choice_id) });
             return refresh();
@@ -298,70 +689,108 @@
     if (!overlay || !world) return;
 
     const wr = world.getBoundingClientRect();
-    const markers = ['4da3ff', 'ffca5f']
+    const scale = state.scale || 1;
+    const toLocalX = (x) => (x - wr.left) / scale;
+    const toLocalY = (y) => (y - wr.top) / scale;
+    const markers = ['4da3ff', '86e5c0', 'ff6d6d']
       .map((c) => `<marker id="arr-${c}" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L0,8 L10,4 z" fill="#${c}"/></marker>`)
       .join('');
     let svg = `<defs>${markers}</defs>`;
 
-    const facts = Array.from(document.querySelectorAll('.fact-node'));
-    for (let i = 0; i < facts.length - 1; i++) {
-      const a = facts[i].getBoundingClientRect();
-      const b = facts[i + 1].getBoundingClientRect();
-      svg += curvePath(
-        a.left - wr.left + a.width / 2,
-        a.bottom - wr.top,
-        b.left - wr.left + b.width / 2,
-        b.top - wr.top,
-        '#4da3ff',
-        3.8,
-        false
-      );
-    }
-
-    document.querySelectorAll('.if-node[data-prev-step]').forEach((ifNode) => {
-      const prev = Number(ifNode.dataset.prevStep || 0);
-      if (!prev) return;
-      const prevFact = document.getElementById(`step-${prev}`);
-      if (!prevFact) return;
-      const a = prevFact.getBoundingClientRect();
-      const b = ifNode.getBoundingClientRect();
-      svg += curvePathVertical(
-        a.left - wr.left + a.width / 2,
-        a.bottom - wr.top,
-        b.left - wr.left + b.width / 2,
-        b.top - wr.top,
-        '#ffca5f',
-        2.8,
-        true
-      );
-    });
-
     document.querySelectorAll('.reason-card[data-reason-target-step]').forEach((reason) => {
+      const textarea = reason.querySelector('textarea[data-field="reason"]');
+      const reasonText = (textarea?.value || '').trim();
+      const reasonEmpty = reasonText === '';
+
+      const currentStepId = Number((reason.id || '').replace('reason-', ''));
       const target = Number(reason.dataset.reasonTargetStep || 0);
       if (!target) return;
+
+      const currentFact = document.getElementById(`step-${currentStepId}`);
       const fact = document.getElementById(`step-${target}`);
-      if (!fact) return;
-      const a = reason.getBoundingClientRect();
-      const b = fact.getBoundingClientRect();
-      svg += curvePath(
-        a.left - wr.left,
-        a.top - wr.top + a.height / 2,
-        b.right - wr.left,
-        b.top - wr.top + b.height / 2,
-        '#ffca5f',
-        2.8,
-        true
-      );
+      if (!currentFact || !fact) return;
+
+      const fromFact = currentFact.getBoundingClientRect();
+      const reasonRect = reason.getBoundingClientRect();
+      const toFact = fact.getBoundingClientRect();
+
+      if (reasonEmpty) {
+        svg += curvePath(
+          toLocalX(fromFact.right),
+          toLocalY(fromFact.top + fromFact.height / 2),
+          toLocalX(toFact.left),
+          toLocalY(toFact.top + toFact.height / 2),
+          '#4da3ff',
+          3.2,
+          false
+        );
+      } else {
+        svg += curvePath(
+          toLocalX(fromFact.right),
+          toLocalY(fromFact.top + fromFact.height / 2),
+          toLocalX(reasonRect.left),
+          toLocalY(reasonRect.top + reasonRect.height / 2),
+          '#4da3ff',
+          3.2,
+          false
+        );
+
+        svg += curvePath(
+          toLocalX(reasonRect.right),
+          toLocalY(reasonRect.top + reasonRect.height / 2),
+          toLocalX(toFact.left),
+          toLocalY(toFact.top + toFact.height / 2),
+          '#ff6d6d',
+          3.2,
+          false
+        );
+      }
+
+      const nextIfNodes = Array.from(document.querySelectorAll(`.if-node[data-if-step="${target}"]`));
+      if (!nextIfNodes.length) return;
+
+      const selectedIf = nextIfNodes.find((node) => node.classList.contains('selected'));
+      nextIfNodes.forEach((ifNode) => {
+        if (!reasonEmpty && selectedIf && ifNode === selectedIf) return;
+        const ifRect = ifNode.getBoundingClientRect();
+        svg += curvePath(
+          toLocalX(reasonEmpty ? fromFact.right : reasonRect.right),
+          toLocalY(reasonEmpty ? (fromFact.top + fromFact.height / 2) : (reasonRect.top + reasonRect.height / 2)),
+          toLocalX(ifRect.left),
+          toLocalY(ifRect.top + ifRect.height / 2),
+          '#86e5c0',
+          2.8,
+          true
+        );
+      });
+
+      if (!reasonEmpty && selectedIf) {
+        const selectedIfRect = selectedIf.getBoundingClientRect();
+        svg += curvePath(
+          toLocalX(reasonRect.right),
+          toLocalY(reasonRect.top + reasonRect.height / 2 + 8),
+          toLocalX(selectedIfRect.left),
+          toLocalY(selectedIfRect.top + selectedIfRect.height / 2 + 8),
+          '#ff6d6d',
+          2.8,
+          true
+        );
+      }
     });
 
     overlay.innerHTML = svg;
   };
 
+  loadViewState();
   syncLaneLayout();
   hookCanvasPanZoom();
   hookAutoSave();
   hookButtons();
   hookFactInteractions();
+  initInputMode();
+  initYouTubeBackground();
+  updateExpandedRows();
+  syncLaneHeadPositions();
   recalcArrows();
 
   let raf = null;
@@ -370,9 +799,15 @@
     raf = requestAnimationFrame(() => {
       raf = null;
       syncLaneLayout();
+      updateExpandedRows();
+      syncLaneHeadPositions();
       recalcArrows();
     });
   };
   window.addEventListener('resize', schedule);
-  if (window.MutationObserver && world) new MutationObserver(schedule).observe(world, { childList: true, subtree: true, attributes: true });
+  document.addEventListener('focusin', schedule);
+  document.addEventListener('focusout', schedule);
+  if (window.MutationObserver && turnStack) {
+    new MutationObserver(schedule).observe(turnStack, { childList: true, subtree: true, attributes: true });
+  }
 })();

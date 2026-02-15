@@ -153,6 +153,19 @@ try {
             json_response(['ok' => true]);
         }
 
+        case 'unselect_option': {
+            $submissionId = require_int('submission_id', $body);
+            $altChoiceId = require_int('alt_choice_id', $body);
+
+            assert_editable($submissionId);
+            if (!option_belongs_to_submission($altChoiceId, $submissionId)) {
+                throw new RuntimeException('option does not belong');
+            }
+
+            unselect_option($altChoiceId);
+            json_response(['ok' => true]);
+        }
+
         case 'delete_option': {
             $submissionId = require_int('submission_id', $body);
             $altChoiceId = require_int('alt_choice_id', $body);

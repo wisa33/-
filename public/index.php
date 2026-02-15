@@ -53,7 +53,7 @@ try {
       <form method="post" class="grid2">
         <input type="hidden" name="action" value="create_play">
         <label>試合ID (match_id)<input class="input" name="match_id"></label>
-        <label>動画ID (video_id)<input class="input" name="video_id"></label>
+        <label>YouTube URL / 動画ID (video_id)<input class="input" name="video_id" placeholder="https://www.youtube.com/watch?v=..."></label>
         <label>ボール保持
           <select class="select" name="possession">
             <option value="1">1: 自チーム</option>

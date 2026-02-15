@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/helpers.php';
 
 function list_plays(int $limit = 50): array
 {
@@ -13,10 +14,14 @@ function list_plays(int $limit = 50): array
 
 function create_play(array $data): int
 {
+    $videoInput = trim((string)($data['video_id'] ?? ''));
+    $youtubeId = extract_youtube_video_id($videoInput);
+    $videoValue = $youtubeId ?? ($videoInput === '' ? null : $videoInput);
+
     $st = db()->prepare('INSERT INTO play (match_id, video_id, possession, timecode_start_sec, timecode_end_sec, phase_no, field_zone_key) VALUES (:match_id, :video_id, :possession, :ts1, :ts2, :phase_no, :zone)');
     $st->execute([
         ':match_id' => ($data['match_id'] ?? '') === '' ? null : (int)$data['match_id'],
-        ':video_id' => ($data['video_id'] ?? '') === '' ? null : (int)$data['video_id'],
+        ':video_id' => $videoValue,
         ':possession' => (int)($data['possession'] ?? 1),
         ':ts1' => ($data['timecode_start_sec'] ?? '') === '' ? null : (float)$data['timecode_start_sec'],
         ':ts2' => ($data['timecode_end_sec'] ?? '') === '' ? null : (float)$data['timecode_end_sec'],
@@ -152,7 +157,7 @@ function reorder_steps(int $submission_id, array $ordered_step_inst_ids): void
 
 function list_options_for_submission(int $submission_id): array
 {
-    $st = db()->prepare('SELECT ac.*, cd.label AS choice_label, cd.category AS choice_category FROM alternative_choice ac JOIN step_instance si ON si.step_inst_id=ac.step_inst_id JOIN choice_definition cd ON cd.choice_def_id=ac.choice_def_id WHERE si.submission_id=:sid ORDER BY ac.step_inst_id ASC, ac.is_selected DESC, ac.created_at ASC');
+    $st = db()->prepare('SELECT ac.*, cd.label AS choice_label, cd.category AS choice_category FROM alternative_choice ac JOIN step_instance si ON si.step_inst_id=ac.step_inst_id JOIN choice_definition cd ON cd.choice_def_id=ac.choice_def_id WHERE si.submission_id=:sid ORDER BY ac.step_inst_id ASC, ac.is_selected DESC, ac.created_at ASC, ac.alt_choice_id ASC');
     $st->execute([':sid' => $submission_id]);
     $rows = $st->fetchAll();
     $group = [];
@@ -207,6 +212,11 @@ function select_option_exclusive(int $alt_choice_id): void
         if ($pdo->inTransaction()) $pdo->rollBack();
         throw $e;
     }
+}
+
+function unselect_option(int $alt_choice_id): void
+{
+    db()->prepare('UPDATE alternative_choice SET is_selected=0 WHERE alt_choice_id=:id')->execute([':id' => $alt_choice_id]);
 }
 
 function delete_option(int $alt_choice_id): void
